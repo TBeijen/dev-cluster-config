@@ -1,0 +1,37 @@
+version: '3'
+
+dotenv: ['.env']
+
+tasks:
+  validateEnv:
+    internal: true
+    preconditions:
+      - test -f .env
+
+  cert:
+    desc: "Create CA for internal dev clusters and import in OS X keychain"
+    vars:
+      certFolder: "{{ .CERT_FOLDER | trimSuffix \"/\" }}"
+      certTld: "{{ .CERT_TLD | trimAll \".\" }}"
+      certFileBaseName: "{{ .certFolder}}/{{ .certTld }}-ca"
+    env:
+      CERT_TLD_TRIMMED: "{{ .certTld }}"
+    cmds:
+      - task: validateEnv
+      - mkdir -p {{ .certFolder }}
+      - openssl ecparam -name prime256v1 -genkey -noout -out {{ .certFileBaseName }}.key
+      - openssl req -new -key {{ .certFileBaseName }}.key -out {{ .certFileBaseName }}.csr -config ca.ini
+      - openssl x509 -req -in {{ .certFileBaseName }}.csr -signkey {{ .certFileBaseName }}.key -out {{ .certFileBaseName }}.crt -days 3650 -extfile ca.ini -extensions v3_req
+      - openssl x509 -noout -text -in {{ .certFileBaseName }}.crt
+      - cmd: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {{ .certFileBaseName }}.crt
+        platforms: [darwin]
+    preconditions:
+      - command -v openssl
+    status:
+      - test -f {{ .certFileBaseName }}.key
+      - test -f {{ .certFileBaseName }}.csr
+      - test -f {{ .certFileBaseName }}.crt
+    # https://github.com/go-task/task/issues/1945
+    # generates:
+    #  - "{{ .certFileBaseName }}.crt"
+    #  - "{{ .certFileBaseName }}.key"
