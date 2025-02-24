@@ -36,7 +36,7 @@ tasks:
     #  - "{{ .certFileBaseName }}.crt"
     #  - "{{ .certFileBaseName }}.key"
 
-  dnsmasq_brew_install:
+  dnsmasq-brew-install:
     desc: "Install dnsmasq using Homebrew"
     cmds:
       - brew install dnsmasq
@@ -47,7 +47,7 @@ tasks:
     preconditions:
       - command -v brew
 
-  dnsmasq_brew_configure:
+  dnsmasq-brew-configure:
     desc: "Configure dnsmasq that is installed using Homebrew"
     vars:
       certTld: "{{ .TLD | trimAll \".\" }}"
@@ -67,8 +67,29 @@ tasks:
       - command -v brew
       - command -v dnsmasq
 
-  dnsmasq_brew:
+  dnsmasq-brew:
     desc: "Install and configure dnsmasq using Homebrew"
     cmds:
-      - task: dnsmasq_brew_install
-      - task: dnsmasq_brew_configure
+      - task: dnsmasq-brew-install
+      - task: dnsmasq-brew-configure
+
+  k3d-cluster-setup-*:
+    desc: "Setup a k3d cluster with port mappings"
+    vars:
+      clusterNumber: '{{index .MATCH 0 | int}}'
+      clusterName: "{{ .K3D_CLUSTER_NAME_PREFIX }}{{ .clusterNumber }}"
+      portVarString: "{{ (add .K3D_PORT_START .clusterNumber) | printf \"%2d\" }}"
+      portHttp: "{{ .K3D_PORT_PREFIX_HTTP }}{{ .portVarString }}{{ .K3D_PORT_SUFFIX_HTTP }}"
+      portHttps: "{{ .K3D_PORT_PREFIX_HTTPS }}{{ .portVarString }}{{ .K3D_PORT_SUFFIX_HTTPS }}"
+      kubeConfigFolder: "{{ .K3D_KUBECONFIG_TARGET_DIR | trimSuffix \"/\" }}"
+    cmds:
+      - |
+        k3d cluster create \
+        -p "{{ .portHttp }}:80@loadbalancer" \
+        -p "{{ .portHttps }}:443@loadbalancer" \
+        --kubeconfig-update-default=false \
+        {{ .clusterName }} {{.CLI_ARGS}}
+      - mkdir -p {{ .kubeConfigFolder }}
+      - k3d kubeconfig merge {{ .clusterName }} -o {{ .kubeConfigFolder }}/{{ .clusterName }}
+    status:
+      - k3d cluster list {{ .clusterName}}
