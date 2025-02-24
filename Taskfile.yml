@@ -12,7 +12,7 @@ tasks:
     desc: "Create CA for internal dev clusters and import in OS X keychain"
     vars:
       certFolder: "{{ .CERT_FOLDER | trimSuffix \"/\" }}"
-      certTld: "{{ .CERT_TLD | trimAll \".\" }}"
+      certTld: "{{ .TLD | trimAll \".\" }}"
       certFileBaseName: "{{ .certFolder}}/{{ .certTld }}-ca"
     env:
       CERT_TLD_TRIMMED: "{{ .certTld }}"
@@ -35,3 +35,33 @@ tasks:
     # generates:
     #  - "{{ .certFileBaseName }}.crt"
     #  - "{{ .certFileBaseName }}.key"
+
+  dnsmasq_brew_install:
+    desc: "Install dnsmasq via Homebrew"
+    cmds:
+      - brew install dnsmasq
+      - sudo brew services start dnsmasq
+    status:
+      - brew list dnsmasq
+      - brew services list | grep dnsmasq
+    preconditions:
+      - command -v brew
+
+  dnsmasq_brew_configure:
+    desc: "Configure dnsmasq that is installed using Homebrew"
+    vars:
+      certTld: "{{ .TLD | trimAll \".\" }}"
+    cmds:
+      - task: validateEnv
+      - |
+        CONFIG_FILE=$(brew --prefix)/etc/dnsmasq.conf
+        if ! grep -q "^conf-dir=$(brew --prefix)/etc/dnsmasq.d/,\*\.conf" $CONFIG_FILE; then
+          echo "conf-dir=$(brew --prefix)/etc/dnsmasq.d/,*.conf" >> $CONFIG_FILE;
+        else
+          echo "$CONFIG_FILE was already configured"
+        fi
+      - mkdir -p $(brew --prefix)/etc/dnsmasq.d
+      - echo "address=/{{ .certTld }}/127.0.0.1" > $(brew --prefix)/etc/dnsmasq.d/{{ .certTld }}.conf
+      - sudo brew services restart dnsmasq
+    preconditions:
+      - command -v brew
