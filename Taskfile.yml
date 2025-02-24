@@ -37,7 +37,7 @@ tasks:
     #  - "{{ .certFileBaseName }}.key"
 
   dnsmasq_brew_install:
-    desc: "Install dnsmasq via Homebrew"
+    desc: "Install dnsmasq using Homebrew"
     cmds:
       - brew install dnsmasq
       - sudo brew services start dnsmasq
@@ -65,3 +65,10 @@ tasks:
       - sudo brew services restart dnsmasq
     preconditions:
       - command -v brew
+      - command -v dnsmasq
+
+  dnsmasq_brew:
+    desc: "Install and configure dnsmasq using Homebrew"
+    cmds:
+      - task: dnsmasq_brew_install
+      - task: dnsmasq_brew_configure
