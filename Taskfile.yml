@@ -11,7 +11,8 @@ tasks:
   cert:
     desc: "Create CA for internal dev clusters and import in OS X keychain"
     vars:
-      certFolder: "{{ .CERT_FOLDER | trimSuffix \"/\" }}"
+      certFolder:
+        sh: realpath {{ .CERT_FOLDER | trimSuffix "/" }}
       certTld: "{{ .TLD | trimAll \".\" }}"
       certFileBaseName: "{{ .certFolder}}/{{ .certTld }}-ca"
     env:
@@ -92,4 +93,64 @@ tasks:
       - mkdir -p {{ .kubeConfigFolder }}
       - k3d kubeconfig merge {{ .clusterName }} -o {{ .kubeConfigFolder }}/{{ .clusterName }}
     status:
+      - k3d cluster list {{ .clusterName}}
+    preconditions:
+      - command -v k3d
+
+  k3d-cluster-configure-*:
+    desc: "Configure a previously setup k3d cluster"
+    vars:
+      clusterNumber: '{{index .MATCH 0 | int}}'
+      clusterName: "{{ .K3D_CLUSTER_NAME_PREFIX }}{{ .clusterNumber }}"
+      certFolder:
+        sh: realpath {{ .CERT_FOLDER | trimSuffix "/" }}
+      certTld: "{{ .TLD | trimAll \".\" }}"
+      certFileBaseName: "{{ .certFolder }}/{{ .certTld }}-ca"
+      certManagerNamespace: cert-manager
+      certManagerCaName: root-ca
+    cmds:
+      # Install cert-manager
+      - helm repo add jetstack https://charts.jetstack.io
+      - helm repo update
+      - |
+        helm upgrade --install \
+          cert-manager jetstack/cert-manager \
+          --namespace {{ .certManagerNamespace }} \
+          --create-namespace \
+          --set crds.enabled=true \
+          --set webhook.featureGates="NameConstraints=true" \
+          --set featureGates="NameConstraints=true"
+      # Set up root CA
+      - kubectl -n {{ .certManagerNamespace }} create secret tls {{ .certManagerCaName }} --cert={{ .certFileBaseName }}.crt --key={{ .certFileBaseName }}.key
+      - |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: cert-manager.io/v1
+        kind: ClusterIssuer
+        metadata:
+          name: {{ .certManagerCaName }}
+        spec:
+          ca:
+            secretName: {{ .certManagerCaName }}
+        EOF
+      # Set up service for east-west traffic
+
+      # Enable Traefik access logging
+      - |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: helm.cattle.io/v1
+        kind: HelmChartConfig
+        metadata:
+          name: traefik
+          namespace: kube-system
+        spec:
+          # See: https://github.com/traefik/traefik-helm-chart/blob/master/traefik/values.yaml
+          valuesContent: |-
+            logs:
+              access:
+                enabled: true
+        EOF
+    preconditions:
+      - command -v k3d
+      - command -v helm
+      - '[[ "$(kubectl config current-context)" == "k3d-{{ .clusterName }}" ]]'
       - k3d cluster list {{ .clusterName}}
