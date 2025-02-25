@@ -64,6 +64,7 @@ tasks:
       - mkdir -p $(brew --prefix)/etc/dnsmasq.d
       - echo "address=/{{ .certTld }}/127.0.0.1" > $(brew --prefix)/etc/dnsmasq.d/{{ .certTld }}.conf
       - sudo brew services restart dnsmasq
+      - sudo sh -c "echo 'nameserver 127.0.0.1' > /etc/resolver/{{ .certTld }}"
     preconditions:
       - command -v brew
       - command -v dnsmasq
@@ -102,12 +103,17 @@ tasks:
     vars:
       clusterNumber: '{{index .MATCH 0 | int}}'
       clusterName: "{{ .K3D_CLUSTER_NAME_PREFIX }}{{ .clusterNumber }}"
+      portVarString: "{{ (add .K3D_PORT_START .clusterNumber) | printf \"%2d\" }}"
+      portHttp: "{{ .K3D_PORT_PREFIX_HTTP }}{{ .portVarString }}{{ .K3D_PORT_SUFFIX_HTTP }}"
+      portHttps: "{{ .K3D_PORT_PREFIX_HTTPS }}{{ .portVarString }}{{ .K3D_PORT_SUFFIX_HTTPS }}"
       certFolder:
         sh: realpath {{ .CERT_FOLDER | trimSuffix "/" }}
       certTld: "{{ .TLD | trimAll \".\" }}"
       certFileBaseName: "{{ .certFolder }}/{{ .certTld }}-ca"
       certManagerNamespace: cert-manager
       certManagerCaName: root-ca
+      clusterDomain: "{{ .clusterName }}{{ if not ( .K3D_SUBDOMAIN | empty) }}.{{ .K3D_SUBDOMAIN }}{{ end }}.{{ .certTld }}"
+      k3dDomain: "{{ if not ( .K3D_SUBDOMAIN | empty) }}{{ .K3D_SUBDOMAIN }}.{{ end }}{{ .certTld }}"
     cmds:
       # Install cert-manager
       - helm repo add jetstack https://charts.jetstack.io
@@ -120,19 +126,85 @@ tasks:
           --set crds.enabled=true \
           --set webhook.featureGates="NameConstraints=true" \
           --set featureGates="NameConstraints=true"
+
       # Set up root CA
-      - kubectl -n {{ .certManagerNamespace }} create secret tls {{ .certManagerCaName }} --cert={{ .certFileBaseName }}.crt --key={{ .certFileBaseName }}.key
+      - |
+        kubectl -n {{ .certManagerNamespace }} create secret tls {{ .certManagerCaName }} \
+        --cert={{ .certFileBaseName }}.crt \
+        --key={{ .certFileBaseName }}.key \
+        --dry-run=client -o yaml | \
+        kubectl label -f - foo=bar --local -o yaml | \
+        kubectl apply -f -
+      # - kubectl -n {{ .certManagerNamespace }} label secret {{ .certManagerCaName }} "app.kubernetes.io/managed-by=taskfile-dev-cluster-config" 
       - |
         cat <<EOF | kubectl apply -f -
         apiVersion: cert-manager.io/v1
         kind: ClusterIssuer
         metadata:
           name: {{ .certManagerCaName }}
+          labels:
+            app.kubernetes.io/managed-by: taskfile-dev-cluster-config
         spec:
           ca:
             secretName: {{ .certManagerCaName }}
         EOF
+
       # Set up service for east-west traffic
+      - |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: traefik-internal
+          namespace: kube-system
+          labels:
+            app.kubernetes.io/managed-by: taskfile-dev-cluster-config
+        spec:
+          type: ClusterIP
+          ports:
+          - name: web
+            port: 80
+            protocol: TCP
+            targetPort: web
+          - name: webext
+            port: {{ .portHttp }}
+            protocol: TCP
+            targetPort: web
+          - name: websecure
+            port: 443
+            protocol: TCP
+            targetPort: websecure
+          - name: websecureext
+            port: {{ .portHttps }}
+            protocol: TCP
+            targetPort: websecure
+          selector:
+            app.kubernetes.io/instance: traefik-kube-system
+            app.kubernetes.io/name: traefik
+        EOF
+
+      # Configure CoreDNS
+      - |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: coredns-custom
+          namespace: kube-system
+          labels:
+            app.kubernetes.io/managed-by: taskfile-dev-cluster-config
+        data:
+          {{ .k3dDomain }}.server: |
+            {{ .k3dDomain }}:53 {
+                errors
+                cache 30
+                rewrite name regex (.*)\.{{ .clusterDomain | replace "." "\\." }} traefik-internal.kube-system.svc.cluster.local
+                # We need to rewrite everything coming into this configuration block to avoid infinite loops
+                rewrite name regex (.*)\.{{ .k3dDomain | replace "." "\\." }} host.k3d.internal
+                forward . 127.0.0.1:53
+            }
+        EOF
+      - kubectl -n kube-system rollout restart deployment coredns
 
       # Enable Traefik access logging
       - |
@@ -142,6 +214,8 @@ tasks:
         metadata:
           name: traefik
           namespace: kube-system
+          labels:
+            app.kubernetes.io/managed-by: taskfile-dev-cluster-config
         spec:
           # See: https://github.com/traefik/traefik-helm-chart/blob/master/traefik/values.yaml
           valuesContent: |-
@@ -149,6 +223,79 @@ tasks:
               access:
                 enabled: true
         EOF
+      
+      # Sample nginx application
+      - |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: sample
+          labels:
+            app: sample
+            app.kubernetes.io/managed-by: taskfile-dev-cluster-config
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: sample
+          template:
+            metadata:
+              creationTimestamp: null
+              labels:
+                app: sample
+            spec:
+              containers:
+              - image: nginx:alpine
+                name: nginx
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          labels:
+            app: sample
+            app.kubernetes.io/managed-by: taskfile-dev-cluster-config
+          name: sample
+        spec:
+          type: ClusterIP
+          ports:
+          - name: http
+            port: 80
+            protocol: TCP
+            targetPort: 80
+          selector:
+            app: sample
+        ---
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: sample
+          annotations:
+            cert-manager.io/cluster-issuer: root-ca
+          labels:
+            app: sample
+            app.kubernetes.io/managed-by: taskfile-dev-cluster-config
+        spec:
+          ingressClassName: traefik
+          rules:
+          - host: sample.{{ .clusterDomain }}
+            http:
+              paths:
+              - backend:
+                  service:
+                    name: sample
+                    port:
+                      number: 80
+                path: /
+                pathType: Prefix
+          tls:
+          - hosts:
+            - sample.{{ .clusterDomain }}
+            secretName: sample-cert
+        EOF
+
+      - echo {{ .clusterDomain }}
+
     preconditions:
       - command -v k3d
       - command -v helm
