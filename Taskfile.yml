@@ -76,7 +76,7 @@ tasks:
       - task: dnsmasq-brew-configure
 
   k3d-cluster-setup-*:
-    desc: "Setup a k3d cluster with port mappings"
+    desc: "Setup and configure a k3d cluster with port mappings"
     vars:
       clusterNumber: '{{index .MATCH 0 | int}}'
       clusterName: "{{ .K3D_CLUSTER_NAME_PREFIX }}{{ .clusterNumber }}"
@@ -91,8 +91,16 @@ tasks:
         -p "{{ .portHttps }}:443@loadbalancer" \
         --kubeconfig-update-default=false \
         {{ .clusterName }} {{.CLI_ARGS}}
-      - mkdir -p {{ .kubeConfigFolder }}
-      - k3d kubeconfig merge {{ .clusterName }} -o {{ .kubeConfigFolder }}/{{ .clusterName }}
+      - |
+        if [[ "{{ .kubeConfigFolder }}" != "" ]]; then
+          mkdir -p {{ .kubeConfigFolder }}
+          echo "Writing kubeconfig file to {{ .kubeConfigFolder }}/{{ .clusterName }}"
+          k3d kubeconfig merge {{ .clusterName }} -o {{ .kubeConfigFolder }}/{{ .clusterName }}
+        else
+          echo "Merging kubeconfig into default location"
+          k3d kubeconfig merge {{ .clusterName }} --kubeconfig-merge-default
+        fi
+      - task: k3d-cluster-configure-{{ .clusterNumber }}
     status:
       - k3d cluster list {{ .clusterName}}
     preconditions:
@@ -260,6 +268,14 @@ tasks:
               access:
                 enabled: true
         EOF
+    preconditions:
+      - command -v k3d
+      - command -v helm
+      - '[[ "$(kubectl config current-context)" == "k3d-{{ .clusterName }}" ]]'
+      - k3d cluster list {{ .clusterName}}
+      - test -f {{ .certFileBaseName }}.key
+      - test -f {{ .certFileBaseName }}.crt
+
       
   k3d-cluster-examples-*:
     desc: "Install example applications in cluster"
@@ -410,18 +426,27 @@ tasks:
             name: curl-no-bundle
         EOF
       
+      # Wait for pods to be ready (and some more for ingress and cert to be set up)
+      - kubectl -n examples wait --for=condition=ready pod -l=app=nginx --timeout=60s
+      - kubectl -n examples wait --for=condition=ready pod/curl --timeout=60s
+      - kubectl -n examples wait --for=condition=ready pod/curl-no-bundle --timeout=60s
+      - sleep 5
+
       # Show curl output
       - kubectl -n examples exec curl -- curl https://example-nginx.{{ .clusterDomain }}:{{ .portHttps }}/ -sS -I
       - cmd: kubectl -n examples exec curl-no-bundle -- curl https://example-nginx.{{ .clusterDomain }}:{{ .portHttps }}/ -sS -I
         ignore_error: true
+
+      # Confirmation
+      - |
+        echo " 
+        Your browser should accept the certificate served by:
+        
+        https://example-nginx.{{ .clusterDomain }}:{{ .portHttps }}/
+        "
 
     preconditions:
       - command -v k3d
       - command -v helm
       - '[[ "$(kubectl config current-context)" == "k3d-{{ .clusterName }}" ]]'
       - k3d cluster list {{ .clusterName}}
-
-  debug:
-    desc: "Debugging task"
-    cmds:
-      - echo "{{ .K3D_PORT_PREFIX_HTTP }}"
