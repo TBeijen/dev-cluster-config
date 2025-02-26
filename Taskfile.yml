@@ -1,6 +1,6 @@
 version: '3'
 
-dotenv: ['.env']
+dotenv: ['.env', '.default.env']
 
 tasks:
   validateEnv:
@@ -125,7 +125,9 @@ tasks:
           --create-namespace \
           --set crds.enabled=true \
           --set webhook.featureGates="NameConstraints=true" \
-          --set featureGates="NameConstraints=true"
+          --set featureGates="NameConstraints=true" \
+          --set global.commonLabels."app\.kubernetes\.io/managed-by"=taskfile-dev-cluster-config \
+          --wait
 
       # Set up root CA
       - |
@@ -133,9 +135,8 @@ tasks:
         --cert={{ .certFileBaseName }}.crt \
         --key={{ .certFileBaseName }}.key \
         --dry-run=client -o yaml | \
-        kubectl label -f - foo=bar --local -o yaml | \
+        kubectl label -f - "app.kubernetes.io/managed-by=taskfile-dev-cluster-config" --local -o yaml | \
         kubectl apply -f -
-      # - kubectl -n {{ .certManagerNamespace }} label secret {{ .certManagerCaName }} "app.kubernetes.io/managed-by=taskfile-dev-cluster-config" 
       - |
         cat <<EOF | kubectl apply -f -
         apiVersion: cert-manager.io/v1
@@ -147,6 +148,42 @@ tasks:
         spec:
           ca:
             secretName: {{ .certManagerCaName }}
+        EOF
+
+      # Install trust-manager
+      - |
+        helm upgrade --install \
+          trust-manager jetstack/trust-manager \
+          --namespace {{ .certManagerNamespace }} \
+          --set commonLabels."app\.kubernetes\.io/managed-by"=taskfile-dev-cluster-config \
+          --wait
+
+      # Set up default bundle
+      - |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: trust.cert-manager.io/v1alpha1
+        kind: Bundle
+        metadata:
+          name: default-ca-bundle
+          labels:
+            app.kubernetes.io/managed-by: taskfile-dev-cluster-config
+        spec:
+          sources:
+          - useDefaultCAs: true
+          - secret:
+              name: "root-ca"
+              key: "tls.crt"
+          target:
+            configMap:
+              key: "bundle.pem"
+            additionalFormats:
+              jks:
+                key: "bundle.jks"
+              pkcs12:
+                key: "bundle.p12"
+            namespaceSelector:
+              matchLabels:
+                trust: enabled
         EOF
 
       # Set up service for east-west traffic
@@ -224,26 +261,48 @@ tasks:
                 enabled: true
         EOF
       
+  k3d-cluster-examples-*:
+    desc: "Install example applications in cluster"
+    vars:
+      clusterNumber: '{{index .MATCH 0 | int}}'
+      clusterName: "{{ .K3D_CLUSTER_NAME_PREFIX }}{{ .clusterNumber }}"
+      portVarString: "{{ (add .K3D_PORT_START .clusterNumber) | printf \"%2d\" }}"
+      portHttps: "{{ .K3D_PORT_PREFIX_HTTPS }}{{ .portVarString }}{{ .K3D_PORT_SUFFIX_HTTPS }}"
+      certTld: "{{ .TLD | trimAll \".\" }}"
+      clusterDomain: "{{ .clusterName }}{{ if not ( .K3D_SUBDOMAIN | empty) }}.{{ .K3D_SUBDOMAIN }}{{ end }}.{{ .certTld }}"
+    cmds:
+      # Create namespace for examples with trust enabled
+      - |
+        cat <<EOF | kubectl apply --wait -f -
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: examples
+          labels:
+            app.kubernetes.io/managed-by: taskfile-dev-cluster-config
+            trust: enabled
+        EOF
+
       # Sample nginx application
       - |
-        cat <<EOF | kubectl apply -f -
+        cat <<EOF | kubectl apply --wait -f -
         apiVersion: apps/v1
         kind: Deployment
         metadata:
-          name: sample
+          name: nginx
+          namespace: examples
           labels:
-            app: sample
+            app: nginx
             app.kubernetes.io/managed-by: taskfile-dev-cluster-config
         spec:
           replicas: 1
           selector:
             matchLabels:
-              app: sample
+              app: nginx
           template:
             metadata:
-              creationTimestamp: null
               labels:
-                app: sample
+                app: nginx
             spec:
               containers:
               - image: nginx:alpine
@@ -252,10 +311,11 @@ tasks:
         apiVersion: v1
         kind: Service
         metadata:
+          name: nginx
+          namespace: examples
           labels:
-            app: sample
+            app: nginx
             app.kubernetes.io/managed-by: taskfile-dev-cluster-config
-          name: sample
         spec:
           type: ClusterIP
           ports:
@@ -264,40 +324,104 @@ tasks:
             protocol: TCP
             targetPort: 80
           selector:
-            app: sample
+            app: nginx
         ---
         apiVersion: networking.k8s.io/v1
         kind: Ingress
         metadata:
-          name: sample
+          name: example-nginx
+          namespace: examples
           annotations:
             cert-manager.io/cluster-issuer: root-ca
           labels:
-            app: sample
+            app: nginx
             app.kubernetes.io/managed-by: taskfile-dev-cluster-config
         spec:
           ingressClassName: traefik
           rules:
-          - host: sample.{{ .clusterDomain }}
+          - host: example-nginx.{{ .clusterDomain }}
             http:
               paths:
               - backend:
                   service:
-                    name: sample
+                    name: nginx
                     port:
-                      number: 80
+                      number: 80  
                 path: /
                 pathType: Prefix
           tls:
           - hosts:
-            - sample.{{ .clusterDomain }}
-            secretName: sample-cert
+            - example-nginx.{{ .clusterDomain }}
+            secretName: example-nginx-cert
         EOF
 
-      - echo {{ .clusterDomain }}
+      # Sample curl pod with bundle
+      - |
+        cat <<EOF | kubectl apply --wait -f -
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: curl
+          namespace: examples
+          labels:
+            app: curl
+            app.kubernetes.io/managed-by: taskfile-dev-cluster-config
+        spec:
+          containers:
+          - command:
+            - /bin/sh
+            - -c
+            - sleep infinity
+            image: quay.io/zenlab/curl:latest
+            name: curl
+            volumeMounts:
+              - mountPath: /etc/ssl/certs/
+                name: ca-bundle
+                readOnly: true
+          volumes:
+            - name: ca-bundle
+              configMap:
+                name: default-ca-bundle
+                defaultMode: 0644
+                optional: false
+                items:
+                - key: bundle.pem
+                  path: ca-certificates.crt
+        EOF
+
+      # Sample curl pod without bundle
+      - |
+        cat <<EOF | kubectl apply --wait -f -
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: curl-no-bundle
+          namespace: examples
+          labels:
+            app: curl-no-bundle
+            app.kubernetes.io/managed-by: taskfile-dev-cluster-config
+        spec:
+          containers:
+          - command:
+            - /bin/sh
+            - -c
+            - sleep infinity
+            image: quay.io/zenlab/curl:latest
+            name: curl-no-bundle
+        EOF
+      
+      # Show curl output
+      - kubectl -n examples exec curl -- curl https://example-nginx.{{ .clusterDomain }}:{{ .portHttps }}/ -sS -I
+      - cmd: kubectl -n examples exec curl-no-bundle -- curl https://example-nginx.{{ .clusterDomain }}:{{ .portHttps }}/ -sS -I
+        ignore_error: true
 
     preconditions:
       - command -v k3d
       - command -v helm
       - '[[ "$(kubectl config current-context)" == "k3d-{{ .clusterName }}" ]]'
       - k3d cluster list {{ .clusterName}}
+
+  debug:
+    desc: "Debugging task"
+    cmds:
+      - echo "{{ .K3D_PORT_PREFIX_HTTP }}"
