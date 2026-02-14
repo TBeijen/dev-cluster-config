@@ -76,3 +76,22 @@ The `TLD` variable in `.default.env` (overridable via `.env`) controls the top-l
   * `.internal` (RFC 8375) -- reserved for private-use applications. Good default.
   * `.test` (RFC 6761) -- reserved for testing. Also a safe choice.
 * **Check your host's search domains** (`scutil --dns` on macOS) and ensure the chosen TLD does not appear in any search domain suffix. If it does, the Kubernetes default `ndots:5` setting will cause pod DNS queries to try appending those search domains before resolving the bare name, potentially matching an unintended DNS server.
+
+## Corporate CA Bundle
+
+If your network uses a TLS-intercepting proxy (e.g. Zscaler), pods that make outbound HTTPS requests to the internet will fail certificate verification unless the proxy's CA certificate is included in the trust bundle.
+
+Set `ADDITIONAL_CA_BUNDLE_FILE` in your `.env` to the path of a PEM file containing the additional CA certificate(s):
+
+```ini
+ADDITIONAL_CA_BUNDLE_FILE=~/corporate-ca-bundle.pem
+```
+
+When set, `k3d-cluster-configure-*` will:
+
+1. Create a ConfigMap `additional-ca-bundle` in the `cert-manager` namespace from the specified file
+2. Include it as an additional source in the trust-manager `Bundle`
+
+Pods that mount the `default-ca-bundle` ConfigMap (like the example `curl` pod) will then trust both the local dev CA and the corporate CA, in addition to the default system CAs.
+
+When left empty (the default), no additional ConfigMap is created and the Bundle only includes system CAs and the local dev root CA.

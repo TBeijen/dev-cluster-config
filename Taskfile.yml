@@ -122,6 +122,7 @@ tasks:
       certManagerCaName: root-ca
       clusterDomain: "{{ .clusterName }}{{ if not ( .K3D_SUBDOMAIN | empty) }}.{{ .K3D_SUBDOMAIN }}{{ end }}.{{ .certTld }}"
       k3dDomain: "{{ if not ( .K3D_SUBDOMAIN | empty) }}{{ .K3D_SUBDOMAIN }}.{{ end }}{{ .certTld }}"
+      additionalCaBundle: "{{ .ADDITIONAL_CA_BUNDLE_FILE }}"
     env:
       KUBECONFIG: '{{ if .K3D_KUBECONFIG_TARGET_DIR }}{{ .K3D_KUBECONFIG_TARGET_DIR | trimSuffix "/" }}/{{ .clusterName }}{{ end }}'
     cmds:
@@ -168,8 +169,28 @@ tasks:
           --set commonLabels."app\.kubernetes\.io/managed-by"=taskfile-dev-cluster-config \
           --wait
 
-      # Set up default bundle
+      # Set up default bundle (with optional additional CA bundle)
       - |
+        if [[ "{{ .additionalCaBundle }}" != "" ]]; then
+          BUNDLE_FILE=$(eval echo "{{ .additionalCaBundle }}")
+          if [[ ! -f "${BUNDLE_FILE}" ]]; then
+            echo "ERROR: Additional CA bundle file not found: ${BUNDLE_FILE}"
+            exit 1
+          fi
+          echo "Creating ConfigMap from additional CA bundle: ${BUNDLE_FILE}"
+          kubectl -n {{ .certManagerNamespace }} create configmap additional-ca-bundle \
+            --from-file=bundle.pem="${BUNDLE_FILE}" \
+            --dry-run=client -o yaml | \
+            kubectl label -f - "app.kubernetes.io/managed-by=taskfile-dev-cluster-config" --local -o yaml | \
+            kubectl apply -f -
+          ADDITIONAL_SOURCE="
+          - configMap:
+              name: additional-ca-bundle
+              key: bundle.pem"
+        else
+          ADDITIONAL_SOURCE=""
+        fi
+
         cat <<EOF | kubectl apply -f -
         apiVersion: trust.cert-manager.io/v1alpha1
         kind: Bundle
@@ -182,7 +203,7 @@ tasks:
           - useDefaultCAs: true
           - secret:
               name: "root-ca"
-              key: "tls.crt"
+              key: "tls.crt"${ADDITIONAL_SOURCE}
           target:
             configMap:
               key: "bundle.pem"
