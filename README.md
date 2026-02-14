@@ -21,6 +21,52 @@ That provides:
 
 Read more in the article [East, west, north, south: How to fix your local cluster routes](https://www.tibobeijen.nl/2025/03/24/east-west-north-south-fix-local-cluster-routes/)
 
+## Setup
+
+### Prepare
+
+Look at `.default.env`, override anything you want to adjust to `.env`. 
+
+Example:
+
+```ini
+K3D_KUBECONFIG_TARGET_DIR=~/workspaces/local/k3d/.kube/
+```
+
+### TLS and DNS
+
+Typically once. Requires root.
+
+```
+task cert
+task dnsmasq-brew
+```
+
+### Setup cluster
+
+```sh
+task k3d-cluster-setup-1
+# Add example apps + netshoot (recommended)
+task k3d-cluster-examples-1
+```
+
+## Changing TLD
+
+If you need to adjust the TLD, for example because hitting corporate search domain issues (see below):
+
+Cleanup resolver and dnsmasq config for the old TLD.
+
+```sh
+# Old TLD in these examples: local
+ls -al /etc/resolver/
+sudo rm /etc/resolver/local
+
+ls -al /opt/homebrew/etc/dnsmasq.d/
+rm /opt/homebrew/etc/dnsmasq.d/local.conf
+```
+
+Then re-run the TLS and DNS steps as described above, with the updated `.env`.
+
 ## Choosing a TLD
 
 The `TLD` variable in `.default.env` (overridable via `.env`) controls the top-level domain used for cluster services. The default is `.internal`. When choosing a TLD, keep the following in mind:
