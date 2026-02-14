@@ -83,7 +83,8 @@ tasks:
       portVarString: "{{ (add .K3D_PORT_START .clusterNumber) | printf \"%2d\" }}"
       portHttp: "{{ .K3D_PORT_PREFIX_HTTP }}{{ .portVarString }}{{ .K3D_PORT_SUFFIX_HTTP }}"
       portHttps: "{{ .K3D_PORT_PREFIX_HTTPS }}{{ .portVarString }}{{ .K3D_PORT_SUFFIX_HTTPS }}"
-      kubeConfigFolder: "{{ .K3D_KUBECONFIG_TARGET_DIR | trimSuffix \"/\" }}"
+      kubeConfigFolder:
+        sh: '{{ if .K3D_KUBECONFIG_TARGET_DIR }}eval echo "{{ .K3D_KUBECONFIG_TARGET_DIR | trimSuffix "/" }}"{{ else }}echo ""{{ end }}'
     cmds:
       - |
         k3d cluster create \
@@ -123,8 +124,10 @@ tasks:
       clusterDomain: "{{ .clusterName }}{{ if not ( .K3D_SUBDOMAIN | empty) }}.{{ .K3D_SUBDOMAIN }}{{ end }}.{{ .certTld }}"
       k3dDomain: "{{ if not ( .K3D_SUBDOMAIN | empty) }}{{ .K3D_SUBDOMAIN }}.{{ end }}{{ .certTld }}"
       additionalCaBundle: "{{ .ADDITIONAL_CA_BUNDLE_FILE }}"
+      kubeConfigFolder:
+        sh: '{{ if .K3D_KUBECONFIG_TARGET_DIR }}eval echo "{{ .K3D_KUBECONFIG_TARGET_DIR | trimSuffix "/" }}"{{ else }}echo ""{{ end }}'
     env:
-      KUBECONFIG: '{{ if .K3D_KUBECONFIG_TARGET_DIR }}{{ .K3D_KUBECONFIG_TARGET_DIR | trimSuffix "/" }}/{{ .clusterName }}{{ end }}'
+      KUBECONFIG: '{{ if .kubeConfigFolder }}{{ .kubeConfigFolder }}/{{ .clusterName }}{{ end }}'
     cmds:
       # Install cert-manager
       - helm repo add jetstack https://charts.jetstack.io
@@ -318,8 +321,10 @@ tasks:
       portHttps: "{{ .K3D_PORT_PREFIX_HTTPS }}{{ .portVarString }}{{ .K3D_PORT_SUFFIX_HTTPS }}"
       certTld: "{{ .TLD | trimAll \".\" }}"
       clusterDomain: "{{ .clusterName }}{{ if not ( .K3D_SUBDOMAIN | empty) }}.{{ .K3D_SUBDOMAIN }}{{ end }}.{{ .certTld }}"
+      kubeConfigFolder:
+        sh: '{{ if .K3D_KUBECONFIG_TARGET_DIR }}eval echo "{{ .K3D_KUBECONFIG_TARGET_DIR | trimSuffix "/" }}"{{ else }}echo ""{{ end }}'
     env:
-      KUBECONFIG: '{{ if .K3D_KUBECONFIG_TARGET_DIR }}{{ .K3D_KUBECONFIG_TARGET_DIR | trimSuffix "/" }}/{{ .clusterName }}{{ end }}'
+      KUBECONFIG: '{{ if .kubeConfigFolder }}{{ .kubeConfigFolder }}/{{ .clusterName }}{{ end }}'
     cmds:
       # Create namespace for examples with trust enabled
       - |
