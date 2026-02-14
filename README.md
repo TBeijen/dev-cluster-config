@@ -79,7 +79,10 @@ The `TLD` variable in `.default.env` (overridable via `.env`) controls the top-l
 
 ## Corporate CA Bundle
 
-If your network uses a TLS-intercepting proxy (e.g. Zscaler), pods that make outbound HTTPS requests to the internet will fail certificate verification unless the proxy's CA certificate is included in the trust bundle.
+If your network uses a TLS-intercepting proxy (e.g. Zscaler), the cluster will be affected at two levels:
+
+1. **Node level** -- containerd cannot pull images from registries (e.g. Docker Hub) because the proxy's CA is not trusted by the k3d node OS.
+2. **Pod level** -- application pods that make outbound HTTPS requests will fail certificate verification.
 
 Set `ADDITIONAL_CA_BUNDLE_FILE` in your `.env` to the path of a PEM file containing the additional CA certificate(s):
 
@@ -87,11 +90,9 @@ Set `ADDITIONAL_CA_BUNDLE_FILE` in your `.env` to the path of a PEM file contain
 ADDITIONAL_CA_BUNDLE_FILE=~/corporate-ca-bundle.pem
 ```
 
-When set, `k3d-cluster-configure-*` will:
+When set:
 
-1. Create a ConfigMap `additional-ca-bundle` in the `cert-manager` namespace from the specified file
-2. Include it as an additional source in the trust-manager `Bundle`
+* `k3d-cluster-setup-*` mounts the CA bundle into the k3d node at `/etc/ssl/certs/additional-ca.crt`, so containerd trusts it when pulling images.
+* `k3d-cluster-configure-*` creates a ConfigMap `additional-ca-bundle` in the `cert-manager` namespace and includes it as an additional source in the trust-manager `Bundle`. Pods that mount the `default-ca-bundle` ConfigMap (like the example `curl` pod) will then trust the corporate CA alongside the system CAs and the local dev root CA.
 
-Pods that mount the `default-ca-bundle` ConfigMap (like the example `curl` pod) will then trust both the local dev CA and the corporate CA, in addition to the default system CAs.
-
-When left empty (the default), no additional ConfigMap is created and the Bundle only includes system CAs and the local dev root CA.
+When left empty (the default), no volume mount or additional ConfigMap is created.

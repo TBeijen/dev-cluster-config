@@ -85,12 +85,24 @@ tasks:
       portHttps: "{{ .K3D_PORT_PREFIX_HTTPS }}{{ .portVarString }}{{ .K3D_PORT_SUFFIX_HTTPS }}"
       kubeConfigFolder:
         sh: '{{ if .K3D_KUBECONFIG_TARGET_DIR }}eval echo "{{ .K3D_KUBECONFIG_TARGET_DIR | trimSuffix "/" }}"{{ else }}echo ""{{ end }}'
+      additionalCaBundle:
+        sh: '{{ if .ADDITIONAL_CA_BUNDLE_FILE }}eval echo "{{ .ADDITIONAL_CA_BUNDLE_FILE }}"{{ else }}echo ""{{ end }}'
     cmds:
       - |
+        VOLUME_ARGS=""
+        if [[ "{{ .additionalCaBundle }}" != "" ]]; then
+          if [[ ! -f "{{ .additionalCaBundle }}" ]]; then
+            echo "ERROR: Additional CA bundle file not found: {{ .additionalCaBundle }}"
+            exit 1
+          fi
+          echo "Mounting additional CA bundle into k3d node: {{ .additionalCaBundle }}"
+          VOLUME_ARGS="-v {{ .additionalCaBundle }}:/etc/ssl/certs/additional-ca.crt"
+        fi
         k3d cluster create \
         -p "{{ .portHttp }}:80@loadbalancer" \
         -p "{{ .portHttps }}:443@loadbalancer" \
         --kubeconfig-update-default=false \
+        ${VOLUME_ARGS} \
         {{ .clusterName }} {{.CLI_ARGS}}
       - |
         if [[ "{{ .kubeConfigFolder }}" != "" ]]; then
@@ -123,7 +135,8 @@ tasks:
       certManagerCaName: root-ca
       clusterDomain: "{{ .clusterName }}{{ if not ( .K3D_SUBDOMAIN | empty) }}.{{ .K3D_SUBDOMAIN }}{{ end }}.{{ .certTld }}"
       k3dDomain: "{{ if not ( .K3D_SUBDOMAIN | empty) }}{{ .K3D_SUBDOMAIN }}.{{ end }}{{ .certTld }}"
-      additionalCaBundle: "{{ .ADDITIONAL_CA_BUNDLE_FILE }}"
+      additionalCaBundle:
+        sh: '{{ if .ADDITIONAL_CA_BUNDLE_FILE }}eval echo "{{ .ADDITIONAL_CA_BUNDLE_FILE }}"{{ else }}echo ""{{ end }}'
       kubeConfigFolder:
         sh: '{{ if .K3D_KUBECONFIG_TARGET_DIR }}eval echo "{{ .K3D_KUBECONFIG_TARGET_DIR | trimSuffix "/" }}"{{ else }}echo ""{{ end }}'
     env:
@@ -175,14 +188,13 @@ tasks:
       # Set up default bundle (with optional additional CA bundle)
       - |
         if [[ "{{ .additionalCaBundle }}" != "" ]]; then
-          BUNDLE_FILE=$(eval echo "{{ .additionalCaBundle }}")
-          if [[ ! -f "${BUNDLE_FILE}" ]]; then
-            echo "ERROR: Additional CA bundle file not found: ${BUNDLE_FILE}"
+          if [[ ! -f "{{ .additionalCaBundle }}" ]]; then
+            echo "ERROR: Additional CA bundle file not found: {{ .additionalCaBundle }}"
             exit 1
           fi
-          echo "Creating ConfigMap from additional CA bundle: ${BUNDLE_FILE}"
+          echo "Creating ConfigMap from additional CA bundle: {{ .additionalCaBundle }}"
           kubectl -n {{ .certManagerNamespace }} create configmap additional-ca-bundle \
-            --from-file=bundle.pem="${BUNDLE_FILE}" \
+            --from-file=bundle.pem="{{ .additionalCaBundle }}" \
             --dry-run=client -o yaml | \
             kubectl label -f - "app.kubernetes.io/managed-by=taskfile-dev-cluster-config" --local -o yaml | \
             kubectl apply -f -
