@@ -31,13 +31,23 @@ Example:
 
 ```ini
 K3D_KUBECONFIG_TARGET_DIR=~/workspaces/local/k3d/.kube/
+ADDITIONAL_CA_BUNDLE_FILE=/Users/<me>/corporate-bundle-combined.pem
+```
+
+### Podman machine
+
+Only needed once, after creating a new podman machine.
+Only needed if using a corporate MitM proxy.
+
+```sh
+task podman-machine-prepare [machine-name-if-not-default]
 ```
 
 ### TLS and DNS
 
 Typically once. Requires root.
 
-```
+```sh
 task cert
 task dnsmasq-brew
 ```
@@ -96,3 +106,17 @@ When set:
 * `k3d-cluster-configure-*` creates a ConfigMap `additional-ca-bundle` in the `cert-manager` namespace and includes it as an additional source in the trust-manager `Bundle`. Pods that mount the `default-ca-bundle` ConfigMap (like the example `curl` pod) will then trust the corporate CA alongside the system CAs and the local dev root CA.
 
 When left empty (the default), no volume mount or additional ConfigMap is created.
+
+### Podman machine preparation
+
+If Podman is used as the container runtime (the macOS default), the Podman VM itself also needs to trust the corporate CA. Without this, image pulls from within the VM may fail with TLS errors before k3d even starts.
+
+This is a one-time setup step, repeated only when the CA bundle changes or the Podman machine is recreated:
+
+```sh
+task podman-machine-prepare
+# Or, for a non-default machine name:
+task podman-machine-prepare -- my-machine-name
+```
+
+This copies the `ADDITIONAL_CA_BUNDLE_FILE` into the VM at `/etc/pki/ca-trust/source/anchors/additional-ca.pem` and runs `update-ca-trust`. A bundle PEM file containing multiple certificates is fine -- `update-ca-trust` parses each PEM block independently.

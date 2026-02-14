@@ -75,6 +75,27 @@ tasks:
       - task: dnsmasq-brew-install
       - task: dnsmasq-brew-configure
 
+  podman-machine-prepare:
+    desc: "Add additional CA bundle to the Podman machine's trust store (one-time setup, optionally pass machine name as CLI arg)"
+    vars:
+      additionalCaBundle:
+        sh: '{{ if .ADDITIONAL_CA_BUNDLE_FILE }}eval echo "{{ .ADDITIONAL_CA_BUNDLE_FILE }}"{{ else }}echo ""{{ end }}'
+      machineName: '{{ if .CLI_ARGS }}{{ .CLI_ARGS }}{{ else }}podman-machine-default{{ end }}'
+    cmds:
+      - task: validateEnv
+      - |
+        echo "Copying {{ .additionalCaBundle }} to {{ .machineName }}:/etc/pki/ca-trust/source/anchors/additional-ca.pem"
+        podman machine cp "{{ .additionalCaBundle }}" "{{ .machineName }}:/etc/pki/ca-trust/source/anchors/additional-ca.pem"
+      - |
+        echo "Updating CA trust in {{ .machineName }}"
+        podman machine ssh {{ .machineName }} -- update-ca-trust
+    preconditions:
+      - command -v podman
+      - sh: '[ "{{ .additionalCaBundle }}" != "" ]'
+        msg: 'ADDITIONAL_CA_BUNDLE_FILE is not set in .env'
+      - sh: 'test -f "{{ .additionalCaBundle }}"'
+        msg: 'Additional CA bundle file not found: {{ .additionalCaBundle }}'
+
   k3d-cluster-setup-*:
     desc: "Setup and configure a k3d cluster with port mappings"
     vars:
